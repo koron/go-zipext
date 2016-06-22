@@ -2,90 +2,86 @@ package zipext
 
 import (
 	"archive/zip"
-	"encoding/binary"
 	"errors"
+	"fmt"
+	"time"
 )
 
-var (
-	// ErrTooShortField is there are no enough data for an extra field.
-	ErrTooShortField = errors.New("too short field")
+// Extra is accessor for zip.File#Extra information.
+type Extra struct {
+	zf   *zip.File
+	perr []error
 
-	// ErrSizeMismatch is that detect size mismatch for an extra field.
-	ErrSizeMismatch = errors.New("size mismatch")
-)
-
-// Field represents extra field of zip file.
-type Field struct {
-	Tag  uint16
-	Data []byte
-}
-
-type readBuf []byte
-
-func (b *readBuf) uint16() uint16 {
-	v := binary.LittleEndian.Uint16(*b)
-	*b = (*b)[2:]
-	return v
-}
-
-func (b *readBuf) uint32() uint32 {
-	v := binary.LittleEndian.Uint32(*b)
-	*b = (*b)[4:]
-	return v
-}
-
-func (b *readBuf) uint64() uint64 {
-	v := binary.LittleEndian.Uint64(*b)
-	*b = (*b)[8:]
-	return v
-}
-
-// Reader reads extend fields in zip file.
-type Reader struct {
-	err error
-
-	buf readBuf
-}
-
-// NewReader creates a reader.
-func NewReader(zf *zip.File) *Reader {
-	return &Reader{
-		buf: readBuf(zf.Extra),
+	// extended timestamp (0x5455)
+	extime struct {
+		m time.Time
+		a time.Time
+		c time.Time
 	}
 }
 
-func (r *Reader) Read() (*Field, error) {
-	if r.err != nil {
-		return nil, r.err
+// ModTime returns the modication time in UTC. The resolution is 1s.
+func (ex *Extra) ModTime() time.Time {
+	if !ex.extime.m.IsZero() {
+		return ex.extime.m
 	}
-	remain := len(r.buf)
-	if remain == 0 {
-		return nil, nil
-	}
-	if remain < 4 {
-		r.err = ErrTooShortField
-		return nil, r.err
-	}
-	tag := r.buf.uint16()
-	size := r.buf.uint16()
-	if int(size) > len(r.buf) {
-		r.err = ErrSizeMismatch
-		return nil, r.err
-	}
-	return &Field{
-		Tag:  tag,
-		Data: r.readBytes(int(size)),
-	}, nil
+	return ex.zf.ModTime()
 }
 
-func (r *Reader) readUint16() uint16 {
-	v := binary.LittleEndian.Uint16(r.buf)
-	r.buf = r.buf[2:]
-	return v
+// AcTime returns the access time in UTC. The resolution is 1s.
+func (ex *Extra) AcTime() time.Time {
+	return ex.extime.a
 }
 
-func (r *Reader) readBytes(size int) []byte {
-	v := r.buf[:size]
-	r.buf = r.buf[size:]
-	return v
+// CrTime returns the creation time in UTC. The resolution is 1s.
+func (ex *Extra) CrTime() time.Time {
+	return ex.extime.c
+}
+
+// Parse parses zip.File#Extra decodes extra information.
+func Parse(zf *zip.File) *Extra {
+	ex := &Extra{
+		zf: zf,
+	}
+	r := NewReader(zf)
+	for {
+		f, err := r.Read()
+		switch {
+		case err != nil:
+			ex.perr = append(ex.perr, err)
+			fallthrough
+		case f == nil:
+			return ex
+		}
+		if err := ex.procField(f); err != nil {
+			ex.perr = append(ex.perr, err)
+		}
+	}
+}
+
+func (ex *Extra) procField(f *Field) error {
+	r := f.readBuf()
+	switch f.Tag {
+
+	case 0x5455: // extended timestamp.
+		if len(r) < 1 {
+			return errors.New("too short extended timestamp")
+		}
+		flag := r.uint8()
+		if flag&0x01 != 0 && len(r) >= 4 {
+			ex.extime.m = time.Unix(int64(r.uint32()), 0)
+		}
+		if flag&0x02 != 0 && len(r) >= 4 {
+			ex.extime.a = time.Unix(int64(r.uint32()), 0)
+		}
+		if flag&0x04 != 0 && len(r) >= 4 {
+			ex.extime.c = time.Unix(int64(r.uint32()), 0)
+		}
+		return nil
+
+	// TODO: parse other tag.
+
+	default:
+		return fmt.Errorf("unsupported tag: 0x%04x", f.Tag)
+	}
 }

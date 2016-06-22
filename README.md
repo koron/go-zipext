@@ -1,14 +1,8 @@
-package main
+# zip.File#Extra parser/accessor
 
-import (
-	"archive/zip"
-	"flag"
-	"fmt"
-	"log"
+Example:
 
-	"github.com/koron/go-zipext"
-)
-
+```go
 func lsext(name string) error {
 	zr, err := zip.OpenReader(name)
 	if err != nil {
@@ -25,12 +19,4 @@ func lsext(name string) error {
 	}
 	return nil
 }
-
-func main() {
-	flag.Parse()
-	for _, s := range flag.Args() {
-		if err := lsext(s); err != nil {
-			log.Fatal(err)
-		}
-	}
-}
+```
